@@ -16,15 +16,15 @@ import torch.nn.functional as F
 
 import numpy as np
 def Compute_error(actuals, predictions, history=None):
-    actuals = actuals.ravel()  # 转为一维数组
-    predictions = predictions.ravel()  # 转为一维数组
+    actuals = actuals.ravel()  
+    predictions = predictions.ravel()  
     error = {}
     rmse = np.sqrt(np.mean((actuals - predictions) ** 2))
     error['RMSE'] = rmse
 
     mae = np.mean(np.abs(actuals - predictions))
     error['MAE'] = mae
-    epsilon = 1e-8  # 防止除零错误
+    epsilon = 1e-8  
     mape = np.mean(np.abs((actuals - predictions) / (actuals + epsilon))) * 100
     error['MAPE'] = mape
 
@@ -37,16 +37,14 @@ def Compute_error(actuals, predictions, history=None):
 
 
     mean_actuals = np.mean(actuals)
-    ss_total = np.sum((actuals - mean_actuals) ** 2)  # 总平方和
-    ss_residual = np.sum((actuals - predictions) ** 2)  # 残差平方和
+    ss_total = np.sum((actuals - mean_actuals) ** 2) 
+    ss_residual = np.sum((actuals - predictions) ** 2) 
     r2 = 1 - (ss_residual / ss_total)
     error['R²'] = r2
-
-    # 如果有历史数据，计算MASE
     if history is not None:
-        history = history.ravel()  # 转为一维数组
-        # 计算训练集的MAE（使用基准模型计算）
-        baseline_mae = np.mean(np.abs(history[1:] - history[:-1]))  # 假设使用简单的差分模型作为基准
+        history = history.ravel() 
+        
+        baseline_mae = np.mean(np.abs(history[1:] - history[:-1]))  
         mase = mae / baseline_mae
         error['MASE'] = mase
     return error
@@ -56,16 +54,11 @@ def Compute_error(actuals, predictions, history=None):
 
 def save_error_to_file(error, file_name='evaluation_results.txt', line_name="line_name"):
     with open(file_name, 'a+',encoding='utf-8') as f:
-        # 将结果写入文件，每一行加入字段和对应的指标名称和值
+
         f.write(f"{line_name}")
         for metric, value in error.items():
             f.write(f" {metric}:  {value:.6f}")
         f.write("\n")
-
-
-
-
-
 
 
 class ComplexReLU(nn.Module):
@@ -163,9 +156,7 @@ class FrequencySamplingRefinementModule(nn.Module):
         # x_up = (x_up) * torch.sqrt(x_var) + x_mean
         return x_up
 
-# -------------------------
-# 轻量 TCN 实现（用于融合）
-# -------------------------
+
 class Chomp1d(nn.Module):
     def __init__(self, chomp_size):
         super().__init__()
@@ -233,9 +224,9 @@ class StarAttention(nn.Module):
         combined_mean = self.gen2(input)
         if self.training:
             ratio = F.softmax(combined_mean, dim=1)
-            ratio = ratio.permute(0, 2, 1) #把计算后的通道概率用到后面去
+            ratio = ratio.permute(0, 2, 1) 
             ratio = ratio.reshape(-1, series)
-            indices = torch.multinomial(ratio, 1) #采样一个返回下标
+            indices = torch.multinomial(ratio, 1) 
             indices = indices.view(batch_size, -1, 1).permute(0, 2, 1)
             combined_mean = torch.gather(combined_mean, 1, indices)
             combined_mean = combined_mean.repeat(1, series, 1)
@@ -247,9 +238,7 @@ class StarAttention(nn.Module):
         return combined_mean_cat, None
 
 
-# -------------------------
-# 主 Model：融合频域模块和 TCN
-# -------------------------
+
 class Model(nn.Module):
     def __init__(self, configs):
         super(Model, self).__init__()
@@ -259,16 +248,16 @@ class Model(nn.Module):
         # RevIN
         self.revin_layer = RevIN(configs.enc_in, affine=True, subtract_last=True)
         self.hidden_size = configs.hidden_size
-        # 可训练频域滤波器参数 w （原始代码）
+
         self.w = nn.Parameter(self.scale * torch.randn(1, self.seq_len))
-        # 频域增强模块
+
         self.FrequencyEnhancementBlock = FrequencySamplingRefinementModule(self.seq_len, self.pred_len, configs.enc_in, 0.1)
         tcn_out_ch = configs.enc_in
 
         self.attention = StarAttention(1,8)
         self.alpha = nn.Parameter(torch.full((1, self.seq_len, 1), 1), requires_grad=False)
         self.tcn = TemporalConvNet(num_inputs=configs.enc_in, num_channels=[16, tcn_out_ch], kernel_size=3, dropout=0.1)
-        # 最终预测 head（保持你原来的结构）
+
         self.fc = nn.Sequential(
             nn.Linear(self.seq_len, self.hidden_size),
             nn.LeakyReLU(),
@@ -305,19 +294,18 @@ class Model(nn.Module):
 
         x_fc = fused.permute(0, 2, 1)   # [B, C, T]
         x_fc = self.fc(x_fc)                 # [B, hidden_size, pred_len]
-        x_fc = x_fc.permute(0, 2, 1)         # [B, pred_len, hidden_size]  (原代码是 pred_len as second dim)
+        x_fc = x_fc.permute(0, 2, 1)         # [B, pred_len, hidden_size]  
 
         out = x_fc
-        # 如果 hidden_size != enc_in，则再投影回 enc_in
+
         if out.shape[-1] != 1:
-            # 增加一个临时线性映射到 enc_in (这里下判断 enc_in==1)
             proj = nn.Linear(out.shape[-1], 1).to(out.device)
             out = proj(out)   # [B, pred_len, 1]
-        # 最后把维度调整为 [B, pred_len, enc_in]
+
         out = out  # already [B, pred_len, 1]
 
         # denorm
-        out = out.permute(0, 2, 1)  # [B, 1, pred_len]  （与原 denorm 使用保持一致）
+        out = out.permute(0, 2, 1)  # [B, 1, pred_len]  
         out = self.revin_layer(out, 'denorm')
         out = out.permute(0, 2, 1)  # [B, pred_len, 1]
         return out
@@ -340,18 +328,15 @@ def load_and_normalize_data(path, input_features, output_features):
     data = data[data[input_features] < 1e7]
     data[input_features] = data[input_features].astype(float)
     data.dropna(subset=input_features, inplace=True)
-    # 异常值过滤
+
     z_thresh = 3.0
     z_scores = np.abs(zscore(data[input_features]))
     mask = (z_scores < z_thresh).all(axis=1)
     data = data[mask]
     # plt.plot(data[input_features].astype(np.float32))
     # plt.show()
-    # 输入归一化
     feature_scaler = MinMaxScaler(feature_range=(-1, 1))
     features = feature_scaler.fit_transform(data[input_features]).astype(np.float32)
-
-    # 输出归一化：每个输出任务一个归一器
     target_scaler = {}
     target_scaled = []
 
@@ -360,10 +345,8 @@ def load_and_normalize_data(path, input_features, output_features):
         scaled = scaler.fit_transform(data[[col]]).astype(np.float32)
         target_scaled.append(scaled)
         target_scaler[col] = scaler
-
-    # 拼接成 shape: [N, num_outputs]
     target = np.concatenate(target_scaled, axis=1)
-    # print(data1)
+
 
 
 
@@ -434,14 +417,15 @@ def set_random_seed(seed=42):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed(seed)
+
 def main(dataset):
-    # 设置随机因子
+
     # set_random_seed(42)
     dataset = dataset
     model_names =[
         'SpectraTCNFusionNet'
     ]
-    # 设置解析器并加载参数
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--path', type=str, default=dataset)
     parser.add_argument('--vision', type=bool, default=True)
@@ -462,9 +446,9 @@ def main(dataset):
     parser.add_argument('--train_test_ratio', type=float, default=0.2)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--random_state', type=int, default=34)
-    # 国家训练
+
     # parser.add_argument('--num_epochs', type=int, default=200)
-    # 建筑训练
+
     parser.add_argument('--num_epochs', type=int, default=100)
     parser.add_argument('--lr', type=float, default=5e-4, help='Adam learning rate')
     args = parser.parse_args(args=[])
@@ -507,7 +491,7 @@ def main(dataset):
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
 
-        # 训练过程
+
         train_MSE_hist = []
         test_MSE_hist = []
 
@@ -604,7 +588,7 @@ def main(dataset):
             test_MSE_hist.append(test_avg_loss)
 
             print(f"[Epoch {epoch + 1}] Test Loss: {test_avg_loss:.6f}")
-            # 逆归一化 + 误差计算
+
             # from compute_error import compute_error
             for task in args.output_features:
                 y_pred = torch.cat(all_preds[task], dim=0).numpy().reshape(-1, 1)
@@ -624,7 +608,6 @@ def main(dataset):
         plt.grid(True)
         plt.show()
 
-        # 测试模型
         model.eval()
         test_loss = 0.0
         all_preds = {name: [] for i, name in enumerate(args.output_features)}
@@ -648,8 +631,8 @@ def main(dataset):
 
                 y_batch = y_batch[:, -args.predict_step:, :]
 
-                # 去掉 dim=1
-                # 适合多步预测
+
+
                 # y_batch = y_batch.squeeze(1)  # shape: [batch, 3]
                 # y_pred = y_pred.squeeze(1)  # shape: [batch, 3]
                 y_true = {name: y_batch[:, :, i] for i, name in enumerate(args.output_features)}
@@ -668,7 +651,6 @@ def main(dataset):
             all_preds[k] = torch.cat(all_preds[k], dim=0).numpy()
             all_labels[k] = torch.cat(all_labels[k], dim=0).numpy()
 
-        # ==== 反归一化、画图、误差保存 ====
         for k in all_preds:
             pred = target_scaler[k].inverse_transform(all_preds[k].reshape(-1, 1)).flatten()
             true = target_scaler[k].inverse_transform(all_labels[k].reshape(-1, 1)).flatten()
@@ -683,9 +665,6 @@ def main(dataset):
             if results["Actual load"] is None:
                 results["Actual load"] =true
             results[f"{model_name}"] = pred
-
-
-            # 误差
             from compute_error import compute_error, save_error_to_file
             error = compute_error(pred, true)
 
@@ -712,10 +691,7 @@ def main(dataset):
     #         + "\\" + Path(dataset).stem + ".csv"
     # )
     # df.to_csv(csv_path, index=False, encoding="utf-8-sig")
-    # print(f"✅ 已保存所有模型结果到 {csv_path}")
-
-
-
+    # print(f"已保存所有模型结果到 {csv_path}")
 
 if __name__ == '__main__':
     dataset_paths = [
